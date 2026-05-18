@@ -12,12 +12,18 @@
  */
 
 /* LIBC/STL */
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 
 /* EXTERNAL */
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
 #include "fpsdk_ros2/ext/msgs.hpp"
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+#  include <foxglove_msgs/msg/location_fix.hpp>
+#endif
 
 /* Fixposition SDK */
 #include <fpsdk_common/logging.hpp>
@@ -95,6 +101,17 @@ void BagWriter::AddMsgDef(const common::fpl::RosMsgDef& rosmsgdef)
 // Forward declare helper for NavSatFix derivation from ECEF odometry
 static bool DeriveNavSatFix(const nav_msgs::msg::Odometry& odom, const std::string& src_topic,
                            sensor_msgs::msg::NavSatFix& fix, std::string& fix_topic);
+
+// Forward declare helper for WGS84 pose + ENU quaternion derivation from ECEF odometry
+static bool DeriveWgs84Pose(const nav_msgs::msg::Odometry& odom, const std::string& src_topic,
+    geometry_msgs::msg::PoseStamped& pose, std::string& pose_topic);
+
+// Forward declare helper for LocationFix derivation from PoseStamped and NavSatFix
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+static bool DeriveLocationFix(const std::string& src_topic, const geometry_msgs::msg::PoseStamped& pose,
+    const sensor_msgs::msg::NavSatFix& navsatfix, foxglove_msgs::msg::LocationFix& locationfix,
+    std::string& locationfix_topic);
+#endif
 
 template <typename Ros1MsgT, typename Ros2MsgT>
 inline bool WriteMessageEx(
@@ -188,6 +205,101 @@ static bool DeriveNavSatFix(const nav_msgs::msg::Odometry& odom, const std::stri
     return true;
 }
 
+// Derive WGS84 position (lat/lon/alt) and ENU quaternion orientation from ECEF odometry message
+static bool DeriveWgs84Pose(const nav_msgs::msg::Odometry& odom, const std::string& src_topic,
+    geometry_msgs::msg::PoseStamped& pose, std::string& pose_topic)
+{
+    using namespace fpsdk::common::trafo;
+
+    const double x = odom.pose.pose.position.x;
+    const double y = odom.pose.pose.position.y;
+    const double z = odom.pose.pose.position.z;
+    const double pos_mag_sq = x * x + y * y + z * z;
+    if (pos_mag_sq < 1e12) {  // sqrt(1e12) = 1e6 meters: not ECEF
+        return false;
+    }
+
+    const std::string odometry_suffix = "_odometry";
+    if (src_topic.length() <= odometry_suffix.length() ||
+        src_topic.compare(src_topic.length() - odometry_suffix.length(), odometry_suffix.length(), odometry_suffix) !=
+            0) {
+        return false;
+    }
+    pose_topic = src_topic;
+    pose_topic.replace(pose_topic.length() - odometry_suffix.length(), odometry_suffix.length(), "_pose");
+
+    const Eigen::Vector3d ecef_pos(x, y, z);
+    const Eigen::Vector3d llh_deg = LlhRadToDeg(TfWgs84LlhEcef(ecef_pos));
+
+    pose.header = odom.header;
+    // Temporary representation requested by plan: x=lat [deg], y=lon [deg], z=alt [m].
+    pose.pose.position.x = llh_deg.x();
+    pose.pose.position.y = llh_deg.y();
+    pose.pose.position.z = llh_deg.z();
+
+    const Eigen::Quaterniond q_ecef_body(
+        odom.pose.pose.orientation.w, odom.pose.pose.orientation.x, odom.pose.pose.orientation.y, odom.pose.pose.orientation.z);
+    if (q_ecef_body.norm() <= std::numeric_limits<double>::epsilon()) {
+        return false;
+    }
+    const Eigen::Matrix3d ecef_rot_matrix = q_ecef_body.normalized().toRotationMatrix();
+    const Eigen::Matrix3d rot_enu_ecef = RotEnuEcef(ecef_pos);
+    const Eigen::Matrix3d rot_enu_body = rot_enu_ecef * ecef_rot_matrix;
+    const Eigen::Quaterniond q_enu_body(rot_enu_body);
+
+    pose.pose.orientation.x = q_enu_body.x();
+    pose.pose.orientation.y = q_enu_body.y();
+    pose.pose.orientation.z = q_enu_body.z();
+    pose.pose.orientation.w = q_enu_body.w();
+
+    return true;
+}
+
+// Derive LocationFix from already-derived PoseStamped (orientation) and NavSatFix (position/covariance)
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+static bool DeriveLocationFix(const std::string& src_topic, const geometry_msgs::msg::PoseStamped& pose,
+    const sensor_msgs::msg::NavSatFix& navsatfix, foxglove_msgs::msg::LocationFix& locationfix,
+    std::string& locationfix_topic)
+{
+    const std::string odometry_suffix = "_odometry";
+    if (src_topic.length() <= odometry_suffix.length() ||
+        src_topic.compare(src_topic.length() - odometry_suffix.length(), odometry_suffix.length(), odometry_suffix) !=
+            0) {
+        return false;
+    }
+    locationfix_topic = src_topic;
+    locationfix_topic.replace(
+        locationfix_topic.length() - odometry_suffix.length(), odometry_suffix.length(), "_locationfix");
+
+    locationfix.timestamp = pose.header.stamp;
+    locationfix.frame_id = pose.header.frame_id;
+
+    // Position matches NavSatFix (WGS84 lat/lon/alt).
+    locationfix.latitude = navsatfix.latitude;
+    locationfix.longitude = navsatfix.longitude;
+    locationfix.altitude = navsatfix.altitude;
+
+    for (int i = 0; i < 9; i++) {
+        locationfix.position_covariance[i] = navsatfix.position_covariance[i];
+    }
+    locationfix.position_covariance_type = navsatfix.position_covariance_type;
+
+    // Extract ENU yaw from quaternion, then convert to compass heading.
+    const auto& q = pose.pose.orientation;
+    const double yaw_enu = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    double heading = M_PI_2 - yaw_enu;
+    while (heading < 0.0) {
+        heading += 2.0 * M_PI;
+    }
+    while (heading >= 2.0 * M_PI) {
+        heading -= 2.0 * M_PI;
+    }
+    locationfix.heading = heading;
+
+    return true;
+}
+#endif
+
 bool BagWriter::WriteMessage(const common::fpl::RosMsgBin& rosmsgbin)
 {
     if (!rosmsgbin.valid_) {
@@ -219,11 +331,28 @@ bool BagWriter::WriteMessage(const common::fpl::RosMsgBin& rosmsgbin)
                 common::ros1::DeserializeMessage(rosmsgbin.msg_data_, ros1_odom);
                 nav_msgs::msg::Odometry ros2_odom;
                 ros2::ros1::Ros1ToRos2(ros1_odom, ros2_odom);
+
                 sensor_msgs::msg::NavSatFix navsatfix;
                 std::string navsatfix_topic;
                 if (DeriveNavSatFix(ros2_odom, rosmsgbin.topic_name_, navsatfix, navsatfix_topic) &&
                     (navsatfix_topic != rosmsgbin.topic_name_)) {
                     WriteMessage(navsatfix, navsatfix_topic, rosmsgbin.rec_time_);
+                }
+
+                geometry_msgs::msg::PoseStamped wgs84_pose;
+                std::string wgs84_pose_topic;
+                if (DeriveWgs84Pose(ros2_odom, rosmsgbin.topic_name_, wgs84_pose, wgs84_pose_topic) &&
+                    (wgs84_pose_topic != rosmsgbin.topic_name_)) {
+                    WriteMessage(wgs84_pose, wgs84_pose_topic, rosmsgbin.rec_time_);
+
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+                    foxglove_msgs::msg::LocationFix locationfix;
+                    std::string locationfix_topic;
+                    if (DeriveLocationFix(rosmsgbin.topic_name_, wgs84_pose, navsatfix, locationfix, locationfix_topic) &&
+                        (locationfix_topic != rosmsgbin.topic_name_)) {
+                        WriteMessage(locationfix, locationfix_topic, rosmsgbin.rec_time_);
+                    }
+#endif
                 }
             }
         } else {

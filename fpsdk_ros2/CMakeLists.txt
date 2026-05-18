@@ -39,6 +39,7 @@ find_package(rclcpp REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(foxglove_msgs QUIET)
 find_package(tf2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 
@@ -56,6 +57,13 @@ target_include_directories(${PROJECT_NAME}
 
 set(FPSDK_COMMON_TRANS_DEPS "fpsdk_common;${rclcpp_TARGETS};${rosbag2_cpp_TARGETS}")
 
+if(foxglove_msgs_FOUND)
+    message(STATUS "fpsdk_ros2: foxglove_msgs found, enabling LocationFix output")
+    target_compile_definitions(${PROJECT_NAME} PUBLIC FPSDK_HAVE_FOXGLOVE_MSGS=1)
+else()
+    message(STATUS "fpsdk_ros2: foxglove_msgs not found, LocationFix output disabled")
+endif()
+
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
         fpsdk_common
@@ -67,6 +75,13 @@ target_link_libraries(${PROJECT_NAME}
         ${tf2_msgs_TARGETS}
         ${nav_msgs_TARGETS}
 )
+
+if(foxglove_msgs_FOUND)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            ${foxglove_msgs_TARGETS}
+    )
+endif()
 
 set_target_properties(${PROJECT_NAME}
     PROPERTIES

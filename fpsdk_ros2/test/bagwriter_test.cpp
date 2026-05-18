@@ -158,6 +158,18 @@ TEST(BagwriterTest, DerivesNavSatFixForEcefOdometry)
     EXPECT_EQ(fix_it->second.type, "sensor_msgs/msg/NavSatFix");
     EXPECT_EQ(fix_it->second.message_count, 1);
 
+    const auto pose_it = topics.find("/user_io/out/poi_pose");
+    ASSERT_NE(pose_it, topics.end());
+    EXPECT_EQ(pose_it->second.type, "geometry_msgs/msg/PoseStamped");
+    EXPECT_EQ(pose_it->second.message_count, 1);
+
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+    const auto locationfix_it = topics.find("/user_io/out/poi_locationfix");
+    ASSERT_NE(locationfix_it, topics.end());
+    EXPECT_EQ(locationfix_it->second.type, "foxglove_msgs/msg/LocationFix");
+    EXPECT_EQ(locationfix_it->second.message_count, 1);
+#endif
+
     std::filesystem::remove_all(bag_path);
 }
 
@@ -184,6 +196,14 @@ TEST(BagwriterTest, DoesNotDeriveNavSatFixForNonEcefOdometry)
 
     const auto fix_it = topics.find("/user_io/out/poi_navsatfix");
     EXPECT_EQ(fix_it, topics.end());
+
+    const auto pose_it = topics.find("/user_io/out/poi_pose");
+    EXPECT_EQ(pose_it, topics.end());
+
+#if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
+    const auto locationfix_it = topics.find("/user_io/out/poi_locationfix");
+    EXPECT_EQ(locationfix_it, topics.end());
+#endif
 
     std::filesystem::remove_all(bag_path);
 }
