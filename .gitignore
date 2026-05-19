@@ -47,3 +47,6 @@ build-tests/
 # We must not commit such files ever. See section FPSDK_BUILD_ROS in fpsdk_doc/fpsdk_build.hpp
 CATKIN_IGNORE
 COLCON_IGNORE
+
+# Ignore secret-scripts prototype area
+secret-scripts/
