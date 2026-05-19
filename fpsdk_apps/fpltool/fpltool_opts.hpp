@@ -49,7 +49,9 @@ class FplToolOptions : public common::app::ProgramOptions
             { 'c', false, "compress"    },
             { 'S', true,  "skip"        },
             { 'D', true,  "duration"    },
-            { 'e', true,  "formats"     } }) {};  // clang-format on
+            { 'e', true,  "formats"     },
+            { 'I', true,  "ros-image-format" },
+            { 'Q', true,  "ros-image-jpeg-quality" } }) {};  // clang-format on
 
     /**
      * @brief Commands, modes of operation
@@ -77,6 +79,8 @@ class FplToolOptions : public common::app::ProgramOptions
     uint32_t                  skip_      = 0;                     //!< Skip start [sec]
     uint32_t                  duration_  = 0;                     //!< Duration [sec]
     std::vector<std::string>  formats_;                           //!< List of output formats for extraction
+    std::string               ros_image_format_ = "jpeg";        //!< ROS2 image export format: raw or jpeg
+    int                       ros_image_jpeg_quality_ = 90;       //!< JPEG quality for compressed ROS2 images
     // clang-format on
 
     static constexpr const char* FORMAT_JSONL = "jsonl";
@@ -109,6 +113,8 @@ class FplToolOptions : public common::app::ProgramOptions
             "    -S, --skip <sec>      -- Skip <sec> seconds from start of log (default: 0, i.e. no skip)\n"
             "    -D, --duration <sec>  -- Process <sec> seconds of log (default: everything)\n"
             "    -e, --formats <fmts>  -- Comma-separated list of output formats for the extract <command> (default: all)\n"
+            "    -I, --ros-image-format <fmt> -- ROS2 image export format: raw or jpeg (default: jpeg)\n"
+            "    -Q, --ros-image-jpeg-quality <n> -- JPEG quality for ROS2 compressed images (1-100, default: 90)\n"
             "    <command>             -- The command, see below\n"
             "    <fpl-file>            -- The .fpl (or .fpl.gz) file to process\n"
             "    \n"
@@ -305,6 +311,15 @@ class FplToolOptions : public common::app::ProgramOptions
                 formats_ = common::string::StrSplit(argument, ",");
                 break;
             }
+            case 'I':
+                ros_image_format_ = argument;
+                break;
+            case 'Q':
+                if (!common::string::StrToValue(argument, ros_image_jpeg_quality_) ||
+                    (ros_image_jpeg_quality_ < 1) || (ros_image_jpeg_quality_ > 100)) {
+                    ok = false;
+                }
+                break;
             default:
                 ok = false;
                 break;
@@ -359,6 +374,13 @@ class FplToolOptions : public common::app::ProgramOptions
         DEBUG("skip          = %d", skip_);
         DEBUG("duration      = %d", duration_);
         DEBUG("formats       = %s", common::string::StrJoin(formats_, " ").c_str());
+        DEBUG("ros_image_format = '%s'", ros_image_format_.c_str());
+        DEBUG("ros_image_jpeg_quality = %d", ros_image_jpeg_quality_);
+
+        if ((ros_image_format_ != "raw") && (ros_image_format_ != "jpeg")) {
+            WARNING("Bad ROS image format '%s' (expected raw or jpeg)", ros_image_format_.c_str());
+            ok = false;
+        }
 
         return ok;
     }

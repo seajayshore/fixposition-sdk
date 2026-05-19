@@ -119,6 +119,11 @@ bool DoExtract(const FplToolOptions& opts)
 
 #if defined(FPSDK_USE_ROS1) || defined(FPSDK_USE_ROS2)
     BagWriter bag;
+#  ifdef FPSDK_USE_ROS2
+    bag.SetImageExportOptions(opts.ros_image_format_ == "raw" ? BagWriter::ImageExportFormat::RAW
+                                                               : BagWriter::ImageExportFormat::JPEG,
+        opts.ros_image_jpeg_quality_);
+#  endif
 #  ifdef FPSDK_USE_ROS1
     const auto output_bag = output_prefix + ".bag";  // File
 #  else

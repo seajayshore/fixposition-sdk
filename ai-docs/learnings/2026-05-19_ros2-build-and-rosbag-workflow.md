@@ -36,8 +36,41 @@ Observed result includes:
 - Camera topic preserved: `/camera/lowres/image` with type `sensor_msgs/msg/Image`
 - Derived odometry topics still present (`_navsatfix`, `_locationfix`, etc.)
 
+## 4) Phase 3 image export modes (working)
+
+Default ROS2 image export is now JPEG on a suffixed topic:
+
+```bash
+./build/fpsdk_apps/fpltool rosbag test-data/fp-8f1240_2026-05-01-22-23-47_maximal.fpl -D 5 -o /tmp/fpsdk_phase3_jpeg_check
+ros2 bag info /tmp/fpsdk_phase3_jpeg_check_bag
+```
+
+Observed result:
+- Image topic: `/camera/lowres/image_compressed`
+- Type: `sensor_msgs/msg/CompressedImage`
+- Bag size for this short sample: about `2.6 MiB`
+
+Explicit raw override:
+
+```bash
+./build/fpsdk_apps/fpltool rosbag test-data/fp-8f1240_2026-05-01-22-23-47_maximal.fpl -D 5 --ros-image-format raw -o /tmp/fpsdk_phase3_raw_check
+ros2 bag info /tmp/fpsdk_phase3_raw_check_bag
+```
+
+Observed result:
+- Image topic: `/camera/lowres/image`
+- Type: `sensor_msgs/msg/Image`
+- Bag size for this short sample: about `13.7 MiB`
+
+Current CLI knobs:
+
+```bash
+--ros-image-format raw|jpeg
+--ros-image-jpeg-quality 90
+```
+
 ## Notes
 
 - This machine can build and run the real extraction flow with CMake + existing `build/` tree.
 - We intentionally did not gate this check on `fpsdk_ros2/test/bagwriter_test.cpp` because of known host prerequisite issues.
-- Use this as the baseline workflow for upcoming image export changes (JPEG phase).
+- JPEG export currently uses OpenCV when available and falls back to raw image export if JPEG encoding is unavailable.

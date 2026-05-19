@@ -43,6 +43,12 @@ namespace bagwriter {
 class BagWriter
 {
    public:
+    enum class ImageExportFormat
+    {
+        RAW,
+        JPEG,
+    };
+
     BagWriter();
     ~BagWriter();
 
@@ -111,6 +117,17 @@ class BagWriter
     void AddMsgDef(const common::fpl::RosMsgDef& rosmsgdef);
 
     /**
+     * @brief Configure how sensor_msgs/Image data is exported.
+     *
+     * Raw export preserves the original topic/type. JPEG export writes
+     * sensor_msgs/msg/CompressedImage on a suffixed topic.
+     *
+     * @param[in]  format        Raw or JPEG export
+     * @param[in]  jpeg_quality  JPEG quality in range [1, 100]
+     */
+    void SetImageExportOptions(const ImageExportFormat format, const int jpeg_quality = 90);
+
+    /**
      * @brief Write message from .fpl
      *
      * @note No checks on the provided data are done!
@@ -122,6 +139,8 @@ class BagWriter
     bool WriteMessage(const common::fpl::RosMsgBin& rosmsgbin);
 
    private:
+    ImageExportFormat image_export_format_ = ImageExportFormat::JPEG;
+    int image_jpeg_quality_ = 90;
     std::unique_ptr<rosbag2_cpp::Writer> bag_;            //!< Bag file handle
     std::map<std::string, common::fpl::RosMsgDef> defs_;  //!< Message definitions (connection headers)
 };

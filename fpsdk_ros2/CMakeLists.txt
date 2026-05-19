@@ -42,6 +42,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(foxglove_msgs QUIET)
 find_package(tf2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 
 
 # SHARED LIBRARY =======================================================================================================
@@ -64,6 +65,14 @@ else()
     message(STATUS "fpsdk_ros2: foxglove_msgs not found, LocationFix output disabled")
 endif()
 
+if(OpenCV_FOUND)
+    message(STATUS "fpsdk_ros2: OpenCV found, enabling JPEG image export")
+    target_compile_definitions(${PROJECT_NAME} PUBLIC FPSDK_HAVE_OPENCV=1)
+    target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+else()
+    message(STATUS "fpsdk_ros2: OpenCV not found, JPEG image export will fall back to raw images")
+endif()
+
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
         fpsdk_common
@@ -80,6 +89,13 @@ if(foxglove_msgs_FOUND)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
             ${foxglove_msgs_TARGETS}
+    )
+endif()
+
+if(OpenCV_FOUND)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            ${OpenCV_LIBS}
     )
 endif()
 

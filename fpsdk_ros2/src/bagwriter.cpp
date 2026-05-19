@@ -12,15 +12,23 @@
  */
 
 /* LIBC/STL */
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 /* EXTERNAL */
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
 #include "fpsdk_ros2/ext/msgs.hpp"
+#include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#if defined(FPSDK_HAVE_OPENCV)
+#  include <opencv2/core/mat.hpp>
+#  include <opencv2/imgcodecs.hpp>
+#  include <opencv2/imgproc.hpp>
+#endif
 #if defined(FPSDK_HAVE_FOXGLOVE_MSGS)
 #  include <foxglove_msgs/msg/location_fix.hpp>
 #endif
@@ -47,6 +55,12 @@ BagWriter::BagWriter()
 BagWriter::~BagWriter()
 {
     Close();
+}
+
+void BagWriter::SetImageExportOptions(const ImageExportFormat format, const int jpeg_quality)
+{
+    image_export_format_ = format;
+    image_jpeg_quality_ = std::clamp(jpeg_quality, 1, 100);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -127,6 +141,89 @@ inline bool WriteMessageEx(
     } else {
         return false;
     }
+}
+
+static std::string MakeCompressedImageTopic(const std::string& src_topic)
+{
+    return src_topic + "_compressed";
+}
+
+#if defined(FPSDK_HAVE_OPENCV)
+static bool EncodeJpegImage(
+    const sensor_msgs::msg::Image& image, const int jpeg_quality, sensor_msgs::msg::CompressedImage& compressed)
+{
+    int cv_type = -1;
+    int color_code = -1;
+    if (image.encoding == sensor_msgs::image_encodings::MONO8) {
+        cv_type = CV_8UC1;
+    } else if (image.encoding == sensor_msgs::image_encodings::MONO16) {
+        cv_type = CV_16UC1;
+    } else if (image.encoding == sensor_msgs::image_encodings::BGR8) {
+        cv_type = CV_8UC3;
+    } else if (image.encoding == sensor_msgs::image_encodings::BGRA8) {
+        cv_type = CV_8UC4;
+    } else if (image.encoding == sensor_msgs::image_encodings::RGB8) {
+        cv_type = CV_8UC3;
+        color_code = cv::COLOR_RGB2BGR;
+    } else if (image.encoding == sensor_msgs::image_encodings::RGBA8) {
+        cv_type = CV_8UC4;
+        color_code = cv::COLOR_RGBA2BGR;
+    } else {
+        return false;
+    }
+
+    const std::size_t expected_size = static_cast<std::size_t>(image.height) * static_cast<std::size_t>(image.step);
+    if (image.data.size() < expected_size) {
+        return false;
+    }
+
+    const cv::Mat src(static_cast<int>(image.height), static_cast<int>(image.width), cv_type,
+        const_cast<unsigned char*>(image.data.data()), static_cast<std::size_t>(image.step));
+    cv::Mat encode_input;
+    if (color_code >= 0) {
+        cv::cvtColor(src, encode_input, color_code);
+    } else {
+        encode_input = src;
+    }
+
+    compressed.header = image.header;
+    compressed.format = "jpeg";
+    const std::vector<int> params{ cv::IMWRITE_JPEG_QUALITY, std::clamp(jpeg_quality, 1, 100) };
+    return cv::imencode(".jpg", encode_input, compressed.data, params);
+}
+#endif
+
+bool WriteImageMessage(const common::fpl::RosMsgDef& rosmsgdef, const common::fpl::RosMsgBin& rosmsgbin,
+    ros2::bagwriter::BagWriter& bag, const BagWriter::ImageExportFormat image_export_format, const int jpeg_quality)
+{
+    if (rosmsgdef.msg_name_ != ros::message_traits::datatype<sensor_msgs::Image>()) {
+        return false;
+    }
+
+    sensor_msgs::Image ros1_image;
+    common::ros1::DeserializeMessage(rosmsgbin.msg_data_, ros1_image);
+    sensor_msgs::msg::Image ros2_image;
+    ros2::ros1::Ros1ToRos2(ros1_image, ros2_image);
+
+    if (image_export_format == BagWriter::ImageExportFormat::RAW) {
+        bag.WriteMessage(ros2_image, rosmsgbin.topic_name_, rosmsgbin.rec_time_);
+        return true;
+    }
+
+#if defined(FPSDK_HAVE_OPENCV)
+    sensor_msgs::msg::CompressedImage compressed_image;
+    if (EncodeJpegImage(ros2_image, jpeg_quality, compressed_image)) {
+        bag.WriteMessage(compressed_image, MakeCompressedImageTopic(rosmsgbin.topic_name_), rosmsgbin.rec_time_);
+        return true;
+    }
+    WARNING_THR(1000, "BagWriter: failed to JPEG-encode image on %s, writing raw image", rosmsgbin.topic_name_.c_str());
+#else
+    WARNING_THR(1000, "BagWriter: JPEG image export requested for %s but OpenCV support is unavailable, writing raw image",
+        rosmsgbin.topic_name_.c_str());
+#endif
+
+    bag.WriteMessage(ros2_image, rosmsgbin.topic_name_, rosmsgbin.rec_time_);
+    return true;
 }
 
 // Derive NavSatFix (WGS84 lat/lon/alt) from ECEF odometry message
@@ -320,9 +417,9 @@ bool BagWriter::WriteMessage(const common::fpl::RosMsgBin& rosmsgbin)
     // message type, which includes the message meta data and definition. This can then be written to the bag. Only some
     // conversions are implemented.
     try {
-        if (WriteMessageEx<sensor_msgs::Imu, sensor_msgs::msg::Imu>(rosmsgdef, rosmsgbin, *this) ||
+        if (WriteImageMessage(rosmsgdef, rosmsgbin, *this, image_export_format_, image_jpeg_quality_) ||
+            WriteMessageEx<sensor_msgs::Imu, sensor_msgs::msg::Imu>(rosmsgdef, rosmsgbin, *this) ||
             WriteMessageEx<sensor_msgs::Temperature, sensor_msgs::msg::Temperature>(rosmsgdef, rosmsgbin, *this) ||
-            WriteMessageEx<sensor_msgs::Image, sensor_msgs::msg::Image>(rosmsgdef, rosmsgbin, *this) ||
             WriteMessageEx<nav_msgs::Odometry, nav_msgs::msg::Odometry>(rosmsgdef, rosmsgbin, *this) ||
             WriteMessageEx<tf2_msgs::TFMessage, tf2_msgs::msg::TFMessage>(rosmsgdef, rosmsgbin, *this)) {
             // After writing Odometry, also derive NavSatFix if possible (Phase 2 plan)
