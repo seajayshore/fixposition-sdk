@@ -20,9 +20,11 @@
 
 /* LIBC/STL */
 #include <algorithm>
+#include <vector>
 
 /* EXTERNAL */
 #include <fpsdk_ros2/ext/msgs.hpp>
+#include <sensor_msgs/image_encodings.h>
 
 /* Fixposition SDK */
 #include <fpsdk_common/ros1.hpp>
@@ -53,6 +55,52 @@ template <typename Ros1MsgT, typename Ros2MsgT>
 void Ros1ToRos2(Ros1MsgT& ros1, Ros2MsgT& ros2);
 
 #else
+
+inline bool RotateImage180(sensor_msgs::msg::Image& image)
+{
+    if ((image.width == 0U) || (image.height == 0U) || image.data.empty()) {
+        return true;
+    }
+
+    int channels = 0;
+    int bit_depth = 0;
+    try {
+        channels = sensor_msgs::image_encodings::numChannels(image.encoding);
+        bit_depth = sensor_msgs::image_encodings::bitDepth(image.encoding);
+    } catch (...) {
+        return false;
+    }
+    if ((channels <= 0) || (bit_depth <= 0) || ((bit_depth % 8) != 0)) {
+        return false;
+    }
+
+    const std::size_t bytes_per_pixel = static_cast<std::size_t>(channels) * static_cast<std::size_t>(bit_depth / 8);
+    const std::size_t step = static_cast<std::size_t>(image.step);
+    const std::size_t width = static_cast<std::size_t>(image.width);
+    const std::size_t height = static_cast<std::size_t>(image.height);
+    const std::size_t row_data_bytes = width * bytes_per_pixel;
+    if (row_data_bytes > step) {
+        return false;
+    }
+
+    const std::size_t expected_size = height * step;
+    if (image.data.size() < expected_size) {
+        return false;
+    }
+
+    const auto src = image.data;
+    for (std::size_t dst_row = 0; dst_row < height; ++dst_row) {
+        const std::size_t src_row = (height - 1U) - dst_row;
+        for (std::size_t dst_col = 0; dst_col < width; ++dst_col) {
+            const std::size_t src_col = (width - 1U) - dst_col;
+            const std::size_t dst_off = (dst_row * step) + (dst_col * bytes_per_pixel);
+            const std::size_t src_off = (src_row * step) + (src_col * bytes_per_pixel);
+            std::copy_n(src.data() + src_off, bytes_per_pixel, image.data.data() + dst_off);
+        }
+    }
+
+    return true;
+}
 
 inline void Ros1ToRos2(const ros::Time& ros1, builtin_interfaces::msg::Time& ros2)
 {
@@ -171,8 +219,13 @@ inline void Ros1ToRos2(const sensor_msgs::Image& ros1, sensor_msgs::msg::Image& 
     ros2.height = ros1.height;
     ros2.width = ros1.width;
     ros2.encoding = ros1.encoding;
+    ros2.is_bigendian = ros1.is_bigendian;
     ros2.step = ros1.step;
     ros2.data = ros1.data;
+
+    // Sensor images in the source .fpl are currently upside down; rotate 180 degrees before bag write.
+    // Keep all topic names and metadata unchanged.
+    (void)RotateImage180(ros2);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
