@@ -1,41 +1,52 @@
-# MCAP Serialization Compatibility and Merge Findings (2026-05-19)
+# MCAP Merge and ROS2 Compatibility Findings (Updated 2026-05-21)
 
-## Summary
-- The robot's MCAP bag (`test-data/robot-v0_original/2026-05-01_robot_ground-truth-test-1.mcap`) uses `ros1` and `protobuf` serialization formats for all topics.
-- The Fixposition MCAP bag (exported via fpltool) uses the `cdr` serialization format (the ROS2 default).
-- Standard ROS2 tools (rosbag2_py, ros2 bag info, etc.) require all topics in a bag to use the same serialization format (typically `cdr`).
-- Attempting to merge these bags with rosbag2_py fails due to serialization format mismatch.
+## What changed
+- The old robot source (`test-data/robot-v0_original`) was mixed serialization (`ros1` + `protobuf`) and required a pure MCAP-native merge workflow with non-ROS2 output expectations.
+- The current robot source (`test-data/vps-v2_live-record-tests/rosbag2_2026_05_20-12_10_22`) is a true ROS2 bag in MCAP with `cdr` serialization.
+- The current Fixposition source (`test-data/fixposition-remap-v8_mcap_bag`) is also ROS2 MCAP with `cdr` serialization.
 
-## Implications
-- The merged MCAP will not be fully compatible with ROS2 tools if it contains mixed serialization formats.
-- Foxglove and rerun may still be able to open and visualize the merged MCAP, as they are more flexible with serialization formats.
-- For true ROS2 compatibility, the robot bag would need to be converted to `cdr` serialization, which is non-trivial and not supported by standard tools.
+## Current conclusion
+- We still use MCAP CLI for filtering and merging because it provides direct topic filtering and deterministic file merge behavior.
+- The merged result can be consumed by ROS2 tools after running `ros2 bag reindex` in the output folder.
+- This is now the primary and only merge path for this project.
 
-## Recommended Approach
-- For now, treat the robot's MCAP as the canonical/final format and append Fixposition topics as-is, even if serialization formats differ.
-- Clearly document in the merge script and project notes that the merged MCAP is not ROS2-compliant and may not work with all tools.
-- Add CLI warnings in the merge script if serialization format mismatches are detected, but allow the merge to proceed.
+## Why MCAP CLI is still the primary tool
+- `mcap filter` gives exact topic filtering in one step.
+- `mcap merge` merges files by log timestamp and keeps sources untouched.
+- In this workflow, ROS2 CLI is used for indexing and inspection (`ros2 bag reindex`, `ros2 bag info`) after merge.
 
-## Native MCAP CLI Workflow
-- MCAP supports multiple serialization formats in a single file, so it is a better fit than rosbag2 for this merge task.
-- The CLI includes a `filter` command for topic/time-range selection and a `merge` command that merges files by record timestamp.
-- The simplest MCAP-native workflow is:
-	1. Filter the Fixposition MCAP down to the three desired topics.
-	2. Merge the filtered Fixposition MCAP with the robot MCAP into a new output file.
-- The source bags remain untouched because both `filter` and `merge` write new files.
-- This result is intended for Foxglove/rerun and custom analysis; do not expect ROS2 tooling to consume the merged file successfully.
+## Important implementation details
+- When merging two ROS2-generated MCAPs, duplicate metadata keys can occur (for example `rosbag2`).
+- Use `mcap merge --allow-duplicate-metadata` to allow this.
+- Keep the intermediate filtered MCAP outside the final bag folder. If it is inside, `ros2 bag info` will read both files and counts will appear doubled.
 
-## Practical Commands
-- Install the MCAP CLI from the latest release binary or via Homebrew if available.
-- Example topic filter step:
-	`mcap filter fixposition-v8_mcap_bag/fixposition-v8_mcap_bag_0.mcap -o /tmp/fixposition_subset.mcap -y '^/user_io/out/poi_navsatfix$' -y '^/user_io/out/poi_locationfix$' -y '^camera/lowres/image_compressed$'`
-- Example merge step:
-	`mcap merge test-data/robot-v0_original/2026-05-01_robot_ground-truth-test-1.mcap /tmp/fixposition_subset.mcap -o test-data/robot-v1_merged.mcap`
+## Validated command pattern
 
-## Next Steps
-- Update the merge script to allow merging with mixed serialization formats, with clear warnings and comments.
-- Document this limitation and the rationale in both the script and project documentation.
+Filter required Fixposition topics:
+
+`mcap filter -o test-data/robot-v2_ros2-bag-tests/tmp/fixposition-selected_0.mcap -y '^/(camera/lowres/image_compressed|user_io/out/poi_locationfix|user_io/out/poi_odometry|user_io/out/poi_navsatfix|user_io/out/poi_pose)$' test-data/fixposition-remap-v8_mcap_bag/fixposition-v8_mcap_bag_0.mcap`
+
+Merge into a new robot-v2 output bag:
+
+`mcap merge --allow-duplicate-metadata -o test-data/robot-v2_ros2-bag-tests/rosbag2_2026_05_21-fixposition-merge/rosbag2_2026_05_21-fixposition-merge_0.mcap test-data/vps-v2_live-record-tests/rosbag2_2026_05_20-12_10_22/rosbag2_2026_05_20-12_10_22_0.mcap test-data/robot-v2_ros2-bag-tests/tmp/fixposition-selected_0.mcap`
+
+Generate ROS2 metadata and validate:
+
+`ros2 bag reindex test-data/robot-v2_ros2-bag-tests/rosbag2_2026_05_21-fixposition-merge`
+
+`ros2 bag info test-data/robot-v2_ros2-bag-tests/rosbag2_2026_05_21-fixposition-merge`
+
+## Result of latest run
+- Final output folder: `test-data/robot-v2_ros2-bag-tests/rosbag2_2026_05_21-fixposition-merge`
+- Final merged file: `rosbag2_2026_05_21-fixposition-merge_0.mcap`
+- Required injected topics present:
+	- `/camera/lowres/image_compressed`
+	- `/user_io/out/poi_locationfix`
+	- `/user_io/out/poi_odometry`
+	- `/user_io/out/poi_navsatfix`
+	- `/user_io/out/poi_pose`
 
 ---
 
-*Created: 2026-05-19*
+Created: 2026-05-19
+Updated: 2026-05-21
